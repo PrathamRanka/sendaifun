@@ -141,6 +141,11 @@ To deploy LeaseForge into your cluster, apply the manifests in order from the `i
    kubectl apply -f infra/kubernetes/deployment.yaml
    kubectl apply -f infra/kubernetes/service.yaml
    ```
+5. **Access the API**:
+   To access the API from your local host machine, forward port 3000:
+   ```bash
+   kubectl port-forward svc/leaseforge-api-service 3000:3000 -n leaseforge
+   ```
 
 ---
 
