@@ -10,8 +10,9 @@ async function main() {
   // Ensure namespace exists first (or logs warning if we can't create it)
   try {
     await kubeClient.coreApi.readNamespace({ name: namespace });
-  } catch (err: any) {
-    const status = err.statusCode ?? err.status ?? err.response?.statusCode;
+  } catch (err: unknown) {
+    const errorObj = err as { statusCode?: number; status?: number; response?: { statusCode?: number } };
+    const status = errorObj.statusCode ?? errorObj.status ?? errorObj.response?.statusCode;
     if (status === 404) {
       logger.info({ namespace }, "Namespace not found. Creating namespace...");
       await kubeClient.coreApi.createNamespace({
@@ -29,8 +30,9 @@ async function main() {
     try {
       await leaseRepository.getLease(namespace, leaseName);
       logger.info({ leaseName }, "Lease object already exists.");
-    } catch (error: any) {
-      const status = error.statusCode ?? error.status ?? error.response?.statusCode;
+    } catch (error: unknown) {
+      const errorObj = error as { statusCode?: number; status?: number; response?: { statusCode?: number } };
+      const status = errorObj.statusCode ?? errorObj.status ?? errorObj.response?.statusCode;
       if (status === 404) {
         logger.info({ leaseName }, "Lease object not found. Creating it...");
         await kubeClient.coordinationApi.createNamespacedLease({

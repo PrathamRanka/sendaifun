@@ -1,9 +1,18 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, Mock } from "vitest";
 import { LeaseManager } from "../../apps/api/src/sandbox/lease-manager";
+import { LeaseAcquirer } from "../../apps/api/src/sandbox/lease-acquirer";
+import { LeaseReleaser } from "../../apps/api/src/sandbox/lease-releaser";
+import { LeaseExpiration } from "../../apps/api/src/sandbox/lease-expiration";
+import { QueueManager } from "../../apps/api/src/sandbox/queue-manager";
 import { V1Lease } from "@kubernetes/client-node";
 
 describe("Lease Acquisition & Lifecycle Unit Tests", () => {
-  let mockLeaseRepo: any;
+  let mockLeaseRepo: {
+    listLeases: Mock;
+    updateLease: Mock;
+    getLease: Mock;
+  };
+  let leaseAcquirer: LeaseAcquirer;
   let leaseManager: LeaseManager;
 
   beforeEach(() => {
@@ -12,7 +21,16 @@ describe("Lease Acquisition & Lifecycle Unit Tests", () => {
       updateLease: vi.fn(),
       getLease: vi.fn(),
     };
-    leaseManager = new LeaseManager(mockLeaseRepo);
+    const leaseExpiration = new LeaseExpiration();
+    leaseAcquirer = new LeaseAcquirer(mockLeaseRepo, leaseExpiration);
+    const leaseReleaser = new LeaseReleaser(mockLeaseRepo);
+    const queueManager = new QueueManager();
+    leaseManager = new LeaseManager(
+      leaseAcquirer,
+      leaseReleaser,
+      queueManager,
+      mockLeaseRepo
+    );
   });
 
   it("should acquire a lease successfully if free", async () => {
@@ -23,7 +41,7 @@ describe("Lease Acquisition & Lifecycle Unit Tests", () => {
     mockLeaseRepo.listLeases.mockResolvedValue(mockLeases);
     mockLeaseRepo.updateLease.mockResolvedValue({});
 
-    const result = await leaseManager.acquireLease("req-1", "sess-1", "tool-1");
+    const result = await leaseAcquirer.acquireLease("req-1", "sess-1", "tool-1");
     expect(result).toBe("sandbox-runner-0");
     expect(mockLeaseRepo.updateLease).toHaveBeenCalled();
   });
@@ -43,7 +61,7 @@ describe("Lease Acquisition & Lifecycle Unit Tests", () => {
     mockLeaseRepo.listLeases.mockResolvedValue(mockLeases);
     mockLeaseRepo.updateLease.mockResolvedValue({});
 
-    const result = await leaseManager.acquireLease("req-new", "sess-new", "tool-new");
+    const result = await leaseAcquirer.acquireLease("req-new", "sess-new", "tool-new");
     expect(result).toBe("sandbox-runner-0");
   });
 
@@ -58,7 +76,7 @@ describe("Lease Acquisition & Lifecycle Unit Tests", () => {
       .mockRejectedValueOnce({ statusCode: 409 })
       .mockResolvedValueOnce({});
 
-    const result = await leaseManager.acquireLease("req-1", "sess-1", "tool-1");
+    const result = await leaseAcquirer.acquireLease("req-1", "sess-1", "tool-1");
     expect(result).toBe("sandbox-runner-0");
     expect(mockLeaseRepo.updateLease).toHaveBeenCalledTimes(2);
   });
@@ -76,7 +94,7 @@ describe("Lease Acquisition & Lifecycle Unit Tests", () => {
 
     await leaseManager.releaseLease("sandbox-runner-0", "req-1", "sess-1", "tool-1");
     expect(mockLeaseRepo.updateLease).toHaveBeenCalled();
-    expect(mockLease.spec.holderIdentity).toBeUndefined();
+    expect(mockLease.spec?.holderIdentity).toBeUndefined();
   });
 
   it("should NOT release a lease if owner mismatch", async () => {

@@ -91,12 +91,13 @@ export class AgentService {
                 response: result,
                 error: null,
               };
-            } catch (error: any) {
+            } catch (error) {
+              const err = error as { message?: string };
               return {
                 id: tc.id,
                 name: tc.name,
                 response: null,
-                error: error.message ?? String(error),
+                error: err.message ?? String(error),
               };
             }
           })

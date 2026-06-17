@@ -7,15 +7,16 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const result = await chatController.handle(body);
     return NextResponse.json(result);
-  } catch (error: any) {
+  } catch (error: unknown) {
     logger.error({ error }, "api.chat.error");
 
-    const code = error.code ?? "internal_error";
-    const message = error.message ?? String(error);
+    const err = error as { code?: string; message?: string; name?: string };
+    const code = err.code ?? "internal_error";
+    const message = err.message ?? String(error);
     const status =
-      error.name === "ZodError"
+      err.name === "ZodError"
         ? 400
-        : error.name === "SandboxCapacityError"
+        : err.name === "SandboxCapacityError"
         ? 503
         : 500;
 

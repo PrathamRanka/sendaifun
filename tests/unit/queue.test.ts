@@ -1,12 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { RequestQueue } from "../../apps/api/src/sandbox/lease-manager";
+import { QueueManager } from "../../apps/api/src/sandbox/queue-manager";
+import { FifoQueue } from "../../apps/api/src/sandbox/fifo-queue";
 import { SandboxCapacityError } from "../../apps/api/src/shared/errors/sandbox-capacity.error";
 
 describe("RequestQueue Unit Tests", () => {
-  let queue: RequestQueue;
+  let queue: QueueManager;
 
   beforeEach(() => {
-    queue = new RequestQueue();
+    queue = new QueueManager(new FifoQueue());
   });
 
   it("should maintain strict FIFO ordering", () => {
@@ -49,7 +50,7 @@ describe("RequestQueue Unit Tests", () => {
       "sess-1",
       "tool-1",
       () => {},
-      (err) => {
+      (err: Error) => {
         caughtError = err;
       },
       1000

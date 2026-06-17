@@ -1,9 +1,17 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, Mock } from "vitest";
 import { LeaseManager } from "../../apps/api/src/sandbox/lease-manager";
+import { LeaseAcquirer } from "../../apps/api/src/sandbox/lease-acquirer";
+import { LeaseReleaser } from "../../apps/api/src/sandbox/lease-releaser";
+import { LeaseExpiration } from "../../apps/api/src/sandbox/lease-expiration";
+import { QueueManager } from "../../apps/api/src/sandbox/queue-manager";
 import { V1Lease } from "@kubernetes/client-node";
 
 describe("Lease Concurrency & Queueing Tests", () => {
-  let mockLeaseRepo: any;
+  let mockLeaseRepo: {
+    listLeases: Mock;
+    updateLease: Mock;
+    getLease: Mock;
+  };
   let leaseManager: LeaseManager;
 
   beforeEach(() => {
@@ -39,7 +47,16 @@ describe("Lease Concurrency & Queueing Tests", () => {
       }),
     };
 
-    leaseManager = new LeaseManager(mockLeaseRepo);
+    const leaseExpiration = new LeaseExpiration();
+    const leaseAcquirer = new LeaseAcquirer(mockLeaseRepo, leaseExpiration);
+    const leaseReleaser = new LeaseReleaser(mockLeaseRepo);
+    const queueManager = new QueueManager();
+    leaseManager = new LeaseManager(
+      leaseAcquirer,
+      leaseReleaser,
+      queueManager,
+      mockLeaseRepo
+    );
   });
 
   it("should handle 20 parallel requests correctly", async () => {

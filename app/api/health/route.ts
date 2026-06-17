@@ -1,12 +1,12 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { healthController } from "@/apps/api/src/api/controllers/health.controller";
 import { logger } from "@/apps/api/src/observability/logger/logger";
 
-export async function GET(req: NextRequest) {
+export async function GET() {
   try {
     const result = await healthController.handle();
     return NextResponse.json(result);
-  } catch (error: any) {
+  } catch (error) {
     logger.error({ error }, "api.health.error");
     return NextResponse.json(
       {
