@@ -11,11 +11,6 @@ import { PiMessage, PiChatResponse, PiToolCall } from "../types/agent.types";
 import { logger } from "../../observability/logger/logger";
 import { sandboxService } from "../../sandbox/services/sandbox.service";
 
-// ---------------------------------------------------------------------------
-// Minimal JSON Schema helper functions for ToolDefinition parameters.
-// The Pi SDK uses TypeBox schemas (TSchema) which are structurally JSON Schema;
-// we build compatible plain objects and cast them to satisfy the constraint.
-// ---------------------------------------------------------------------------
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnySchema = any;
@@ -33,15 +28,7 @@ function str(description?: string): AnySchema {
   return s;
 }
 
-// ---------------------------------------------------------------------------
-// History reconstruction helpers.
-// Return types are plain objects whose structure matches the Pi SDK's
-// AgentMessage union (UserMessage | AssistantMessage | ToolResultMessage).
-// We avoid importing those types directly because they live in
-// @earendil-works/pi-ai which is a nested dep not in the top-level node_modules.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 type SdkMessage = any;
-// ---------------------------------------------------------------------------
 
 function buildAssistantMessage(
   content: string,
@@ -68,9 +55,7 @@ function buildAssistantMessage(
   return {
     role: "assistant",
     content: contentBlocks,
-    // Use a neutral provider tag for replayed history entries.
-    // The Pi SDK does not re-validate replayed messages against the active model.
-    api: "google-generative-ai",
+   api: "google-generative-ai",
     provider: "google",
     model: "unknown",
     usage: {
@@ -113,17 +98,12 @@ function buildToolResultMessage(
   };
 }
 
-// ---------------------------------------------------------------------------
-// RealPiClient
-// ---------------------------------------------------------------------------
 export class RealPiClient implements PiClient {
   private readonly authStorage: AuthStorage;
   private readonly modelRegistry: ModelRegistry;
 
   constructor() {
-    // InMemory auth storage keeps credentials in process memory.
-    // PI_PROVIDER selects the Pi SDK provider (e.g. "google", "anthropic").
-    this.authStorage = AuthStorage.inMemory();
+       this.authStorage = AuthStorage.inMemory();
     this.authStorage.setRuntimeApiKey(env.PI_PROVIDER, env.PI_API_KEY);
 
     this.modelRegistry = ModelRegistry.inMemory(this.authStorage);
@@ -137,15 +117,7 @@ export class RealPiClient implements PiClient {
   ): Promise<PiChatResponse> {
     logger.info({ requestId, sessionId }, "pi.client.chat.started");
 
-    // Buffer of tool calls executed during this prompt turn by our custom tools.
-    const executedToolCalls: PiToolCall[] = [];
-
-    // ------------------------------------------------------------------
-    // 1. Define custom tools that proxy execution through SandboxService.
-    //    Each tool's execute() is called by the Pi SDK when the model
-    //    requests that tool.  We record the PiToolCall then forward to
-    //    SandboxService so tool execution always flows through the sandbox layer.
-    // ------------------------------------------------------------------
+       const executedToolCalls: PiToolCall[] = [];
     const shellRunTool = defineTool({
       name: "shell_run",
       label: "Shell Run",
@@ -241,27 +213,15 @@ export class RealPiClient implements PiClient {
       },
     });
 
-    // ------------------------------------------------------------------
-    // 2. Create a fresh in-memory Pi SDK session per chat() invocation.
-    //    AgentService owns history; we rebuild the Pi session from PiMessage[].
-    //    This means the Pi SDK's internal turn loop starts with full context.
-    // ------------------------------------------------------------------
-    const { session } = await createAgentSession({
+     const { session } = await createAgentSession({
       authStorage: this.authStorage,
       modelRegistry: this.modelRegistry,
       sessionManager: SessionManager.inMemory(),
-      // Disable all built-in tools (read, bash, edit, write).
-      // Only our 3 custom sandbox-proxy tools are exposed to the model.
-      noTools: "builtin",
+       noTools: "builtin",
       customTools: [shellRunTool, fsReadTool, envInspectTool],
     });
 
     try {
-      // ------------------------------------------------------------------
-      // 3. Reconstruct conversation history into the Pi SDK session state.
-      //    Pi SDK messages (AgentMessage = UserMessage | AssistantMessage |
-      //    ToolResultMessage) are set directly on session.state.messages.
-      // ------------------------------------------------------------------
       if (history.length > 0) {
         const sdkMessages: SdkMessage[] = [];
 
@@ -286,25 +246,10 @@ export class RealPiClient implements PiClient {
         session.state.messages = sdkMessages;
       }
 
-      // ------------------------------------------------------------------
-      // 4. Run the prompt.
-      //
-      //    The Pi SDK drives its own internal reasoning loop:
-      //    - Sends context to the model
-      //    - Receives tool calls from the model
-      //    - Calls our custom tool execute() callbacks (above)
-      //    - Feeds results back to the model
-      //    - Repeats until the model produces a final text response
-      //
-      //    All tool execution flows through SandboxService (step 1 above).
-      //    executedToolCalls accumulates every tool call made during the turn.
-      // ------------------------------------------------------------------
+
       await session.prompt(message);
 
-      // ------------------------------------------------------------------
-      // 5. Extract final assistant text and return PiChatResponse.
-      // ------------------------------------------------------------------
-      const finalText = session.getLastAssistantText() ?? "";
+    const finalText = session.getLastAssistantText() ?? "";
 
       logger.info(
         {
