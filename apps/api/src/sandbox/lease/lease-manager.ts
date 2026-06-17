@@ -27,6 +27,14 @@ export class LeaseManager {
     return this.leaseRepo.listLeases(namespace);
   }
 
+  private wakeNext(): void {
+    // Wake up the oldest waiting request in the queue to keep queue progression moving forward
+    const nextRequest = this.queueManager.dequeue();
+    if (nextRequest) {
+      process.nextTick(() => nextRequest.callback());
+    }
+  }
+
   async acquireLeaseWithQueue(
     requestId: string,
     sessionId: string,
@@ -63,9 +71,13 @@ export class LeaseManager {
               resolve(podName);
             } else {
               reject(new SandboxCapacityError());
+              // Crucial Fix: If woken-up request fails to acquire, wake the next request
+              this.wakeNext();
             }
           } catch (error) {
             reject(error);
+            // Crucial Fix: If woken-up request encounters an error, wake the next request
+            this.wakeNext();
           }
         },
         (err) => {
@@ -86,11 +98,7 @@ export class LeaseManager {
       await this.leaseReleaser.releaseLease(podName, requestId, sessionId, toolCallId);
     } finally {
       // Always wake up the oldest waiting request, regardless of update success
-      const nextRequest = this.queueManager.dequeue();
-      if (nextRequest) {
-        // Execute callback in the next tick to clear stack
-        process.nextTick(() => nextRequest.callback());
-      }
+      this.wakeNext();
     }
   }
 }

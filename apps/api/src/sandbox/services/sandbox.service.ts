@@ -5,14 +5,21 @@ import { toolRouterService, ToolRouterService } from "../../tools/tool-router.se
 import { TimeoutRunner } from "../executor/timeout-runner";
 import { podManager, PodManager } from "../lease/pod-manager";
 import { env } from "../../config/env";
+import { PodExecutor, podExecutor } from "../executor/pod-executor";
+import { POD_CONTAINER_NAME } from "../../shared/constants/sandbox.constants";
 
 export class SandboxService {
+  private readonly podExecutor?: PodExecutor;
+
   constructor(
     private readonly leaseMgr: LeaseManager = leaseManager,
     private readonly toolRouter: ToolRouterService = toolRouterService,
     private readonly timeoutRunner: TimeoutRunner = new TimeoutRunner(),
-    private readonly podMgr: PodManager = podManager
-  ) {}
+    private readonly podMgr: PodManager = podManager,
+    podExecutor?: PodExecutor
+  ) {
+    this.podExecutor = podExecutor;
+  }
 
   async executeTool(
     requestId: string,
@@ -21,6 +28,7 @@ export class SandboxService {
     toolCall: PiToolCall
   ): Promise<unknown> {
     let leasedPod: string | null = null;
+    let didTimeout = false;
     try {
       leasedPod = await this.leaseMgr.acquireLeaseWithQueue(
         requestId,
@@ -48,6 +56,7 @@ export class SandboxService {
             { requestId, sessionId, toolCallId, pod: leasedPod },
             "sandbox.execution.timeout"
           );
+          didTimeout = true;
         }
       );
 
@@ -65,6 +74,24 @@ export class SandboxService {
       throw error;
     } finally {
       if (leasedPod) {
+        if (didTimeout) {
+          try {
+            logger.info({ leasedPod, requestId }, "sandbox.execution.cleanup.started");
+            const exec = this.podExecutor ?? podExecutor;
+            // Kill all user processes except PID 1 to clean up background node/shell processes
+            await exec.execute(
+              env.KUBE_NAMESPACE,
+              leasedPod,
+              POD_CONTAINER_NAME,
+              ["sh", "-c", "kill -9 -1"]
+            ).catch((err) => {
+              // Self-killing will cause exec connection disconnection / error, which is expected
+              logger.debug({ leasedPod, err }, "sandbox.execution.cleanup.disconnected");
+            });
+          } catch (cleanupErr) {
+            logger.warn({ leasedPod, cleanupErr }, "sandbox.execution.cleanup.failed");
+          }
+        }
         await this.leaseMgr.releaseLease(
           leasedPod,
           requestId,
