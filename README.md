@@ -1,36 +1,344 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# LeaseForge
 
-## Getting Started
+A Kubernetes-Leased Sandbox Runtime for Pi Agents.
 
-First, run the development server:
+## Overview
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+LeaseForge is a TypeScript backend service that executes Pi Agent tool calls inside a fixed pool of Kubernetes sandbox pods.
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+The system maintains exactly 8 warm sandbox pods and uses Kubernetes Lease objects as the source of truth for pod ownership.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Sandbox pods are never permanently assigned to users or sessions.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Instead:
 
-## Learn More
+1. A tool call arrives.
+2. The system acquires an available Lease.
+3. The corresponding sandbox pod is leased.
+4. The tool executes.
+5. The Lease is released immediately.
 
-To learn more about Next.js, take a look at the following resources:
+If all sandbox pods are busy, requests enter a bounded FIFO queue and wait for capacity.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+The design prioritizes:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+* Correct concurrency control
+* Crash recovery
+* Kubernetes-native coordination
+* Clear observability
+* Safe sandbox execution
 
-## Deploy on Vercel
+---
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+# High Level Architecture
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+┌───────────────────────┐
+│      Client           │
+└──────────┬────────────┘
+│
+▼
+┌───────────────────────┐
+│      POST /chat       │
+└──────────┬────────────┘
+│
+▼
+┌───────────────────────┐
+│     Agent Service     │
+│     (Pi SDK)          │
+└──────────┬────────────┘
+│
+▼
+┌───────────────────────┐
+│    Tool Router        │
+└──────────┬────────────┘
+│
+▼
+┌───────────────────────┐
+│   Sandbox Service     │
+└──────────┬────────────┘
+│
+▼
+┌───────────────────────┐
+│    Lease Manager      │
+└──────────┬────────────┘
+│
+▼
+┌───────────────────────┐
+│ Kubernetes Leases     │
+└──────────┬────────────┘
+│
+▼
+┌───────────────────────┐
+│ Sandbox Pods (8)      │
+└───────────────────────┘
+
+---
+
+# Sandbox Pool
+
+The system owns a fixed StatefulSet.
+
+sandbox-runner-0
+sandbox-runner-1
+sandbox-runner-2
+sandbox-runner-3
+sandbox-runner-4
+sandbox-runner-5
+sandbox-runner-6
+sandbox-runner-7
+
+Each pod has a matching Lease object.
+
+## Lease Name                  Pod
+
+sandbox-runner-0      ->    sandbox-runner-0
+sandbox-runner-1      ->    sandbox-runner-1
+sandbox-runner-2      ->    sandbox-runner-2
+sandbox-runner-3      ->    sandbox-runner-3
+sandbox-runner-4      ->    sandbox-runner-4
+sandbox-runner-5      ->    sandbox-runner-5
+sandbox-runner-6      ->    sandbox-runner-6
+sandbox-runner-7      ->    sandbox-runner-7
+
+---
+
+# Lease Lifecycle
+
+Tool Request
+│
+▼
+Acquire Lease
+│
+▼
+Execute Tool
+│
+▼
+Release Lease
+
+A Lease contains:
+
+* service instance id
+* request id
+* session id
+* tool call id
+* expiration timestamp
+
+Example holder identity:
+
+api-1:req-123:session-abc:tool-xyz
+
+---
+
+# Lease Acquisition Algorithm
+
+1. Read all Lease objects.
+2. Identify free or expired Leases.
+3. Attempt Lease acquisition using optimistic concurrency.
+4. Update holderIdentity.
+5. Update renewTime.
+6. Set leaseDurationSeconds.
+
+If a conflict occurs:
+
+1. Kubernetes returns 409 Conflict.
+2. Retry another Lease.
+3. Repeat until success or exhaustion.
+
+This guarantees that two tool calls can never lease the same pod simultaneously.
+
+---
+
+# Lease Expiration
+
+Leases automatically recover from API crashes.
+
+A Lease is considered expired when:
+
+currentTime >
+renewTime + leaseDurationSeconds
+
+Expired Leases are immediately reusable.
+
+No manual cleanup is required.
+
+---
+
+# Queueing Model
+
+When all 8 pods are leased:
+
+Tool Call
+│
+▼
+FIFO Queue
+│
+▼
+Wait For Capacity
+
+Properties:
+
+* FIFO ordering
+* Max wait time = 15 seconds
+* Process-local queue
+* Automatic wake-up on Lease release
+
+If capacity does not become available:
+
+sandbox_capacity_timeout
+
+is returned.
+
+---
+
+# Tool Execution Model
+
+Tool Request
+│
+▼
+Lease Pod
+│
+▼
+Execute In Pod
+│
+▼
+Collect Output
+│
+▼
+Release Lease
+
+Tool execution timeout:
+
+30 seconds
+
+Lease duration:
+
+45 seconds
+
+---
+
+# Supported Tools
+
+shell.run
+
+Allowed commands:
+
+* pwd
+* ls
+* cat
+* whoami
+* node --version
+
+Arbitrary shell execution is prohibited.
+
+---
+
+fs.read
+
+Reads files inside an allowlisted root.
+
+Protected against:
+
+* path traversal
+* absolute path escape
+* unauthorized reads
+
+---
+
+env.inspect
+
+Returns:
+
+* pod name
+* namespace
+* user
+* cwd
+* runtime versions
+
+---
+
+# Concurrency Guarantees
+
+The system guarantees:
+
+✓ No pod double-assignment
+
+✓ Lease conflict safety
+
+✓ Automatic crash recovery
+
+✓ FIFO queue ordering
+
+✓ Timeout cleanup
+
+✓ Lease release on failures
+
+---
+
+# Failure Handling
+
+Tool Failure
+
+Tool throws error
+│
+▼
+Release Lease
+│
+▼
+Return Failure
+
+---
+
+Tool Timeout
+
+Tool exceeds 30 seconds
+│
+▼
+Cancel Execution
+│
+▼
+Release Lease
+│
+▼
+Return Timeout
+
+---
+
+API Crash
+
+Process crashes
+│
+▼
+Lease expires
+│
+▼
+Future request recovers pod
+
+---
+
+# Production Evolution
+
+The current implementation uses a process-local queue.
+
+For multi-replica deployments:
+
+Replace FIFO Queue with:
+
+* Redis Streams
+* Kafka
+* NATS JetStream
+* Temporal
+
+Lease renewals should become heartbeat-based.
+
+Execution history should be persisted to PostgreSQL.
+
+Prometheus metrics should track:
+
+* lease acquisition latency
+* lease conflicts
+* queue length
+* queue wait time
+* tool failures
+* tool timeouts
+
+Sandbox images should be hardened and network isolated.
