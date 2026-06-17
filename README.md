@@ -134,7 +134,7 @@ To deploy LeaseForge into your cluster, apply the manifests in order from the `i
    ```bash
    kubectl create secret generic leaseforge-secrets \
      --namespace=leaseforge \
-     --from-literal=PI_API_KEY="your-gemini-api-key"
+     --from-literal=PI_API_KEY="your-pi-sdk-api-key"
    ```
    Apply the API deployment and service:
    ```bash
@@ -157,8 +157,8 @@ The application is configured using variables in `.env` or container environment
 | :--- | :--- | :--- | :--- |
 | `NODE_ENV` | Application environment (`development`, `production`, `test`) | `development` | Yes |
 | `PORT` | Local network port the server listens on | `3000` | Yes |
-| `PI_API_KEY` | Your Pi SDK/Gemini API key | (None) | Yes |
-| `PI_BASE_URL` | Base API target URL for the Pi SDK runtime | `https://generativelanguage.googleapis.com` | Yes |
+| `PI_API_KEY` | API key for the selected Pi SDK provider (e.g. a Google Gemini or Anthropic key) | (None) | Yes |
+| `PI_PROVIDER` | Pi SDK provider name matching `PI_API_KEY` (e.g. `google`, `anthropic`, `openai`) | `google` | No |
 | `KUBE_NAMESPACE` | Target namespace sandbox pods and leases reside in | `leaseforge` | Yes |
 | `INSTANCE_ID` | Identity string of the API server instance | `api-1` | Yes |
 

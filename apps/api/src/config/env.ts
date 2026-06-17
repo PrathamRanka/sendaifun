@@ -10,9 +10,18 @@ const envSchema = z.object({
 
   PORT: z.coerce.number(),
 
+  /**
+   * API key for the Pi SDK provider.
+   * Passed to AuthStorage.setRuntimeApiKey(PI_PROVIDER, PI_API_KEY).
+   */
   PI_API_KEY: z.string().min(1),
 
-  PI_BASE_URL: z.string().url(),
+  /**
+   * Pi SDK provider name (e.g. "google", "anthropic", "openai").
+   * Defaults to "google" to preserve backward-compatibility with the
+   * previous Gemini-based configuration.
+   */
+  PI_PROVIDER: z.string().default("google"),
 
   KUBE_NAMESPACE: z.string(),
 

@@ -1,20 +1,132 @@
-import { GoogleGenAI, Type } from "@google/genai";
+import {
+  AuthStorage,
+  createAgentSession,
+  defineTool,
+  ModelRegistry,
+  SessionManager,
+} from "@earendil-works/pi-coding-agent";
 import { env } from "../../config/env";
 import { PiClient } from "../interfaces/pi-client.interface";
 import { PiMessage, PiChatResponse, PiToolCall } from "../types/agent.types";
 import { logger } from "../../observability/logger/logger";
-import { generateId } from "../../shared/utils/ids";
+import { sandboxService } from "../../sandbox/services/sandbox.service";
 
+// ---------------------------------------------------------------------------
+// Minimal JSON Schema helper functions for ToolDefinition parameters.
+// The Pi SDK uses TypeBox schemas (TSchema) which are structurally JSON Schema;
+// we build compatible plain objects and cast them to satisfy the constraint.
+// ---------------------------------------------------------------------------
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnySchema = any;
+
+function obj(
+  properties: Record<string, AnySchema>,
+  required?: string[]
+): AnySchema {
+  return { type: "object", properties, required: required ?? [] };
+}
+
+function str(description?: string): AnySchema {
+  const s: Record<string, unknown> = { type: "string" };
+  if (description) s["description"] = description;
+  return s;
+}
+
+// ---------------------------------------------------------------------------
+// History reconstruction helpers.
+// Return types are plain objects whose structure matches the Pi SDK's
+// AgentMessage union (UserMessage | AssistantMessage | ToolResultMessage).
+// We avoid importing those types directly because they live in
+// @earendil-works/pi-ai which is a nested dep not in the top-level node_modules.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type SdkMessage = any;
+// ---------------------------------------------------------------------------
+
+function buildAssistantMessage(
+  content: string,
+  toolCalls?: PiToolCall[]
+): SdkMessage {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const contentBlocks: any[] = [];
+
+  if (content) {
+    contentBlocks.push({ type: "text", text: content });
+  }
+
+  if (toolCalls) {
+    for (const tc of toolCalls) {
+      contentBlocks.push({
+        type: "toolCall",
+        id: tc.id,
+        name: tc.name,
+        arguments: tc.arguments,
+      });
+    }
+  }
+
+  return {
+    role: "assistant",
+    content: contentBlocks,
+    // Use a neutral provider tag for replayed history entries.
+    // The Pi SDK does not re-validate replayed messages against the active model.
+    api: "google-generative-ai",
+    provider: "google",
+    model: "unknown",
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason: "stop",
+    timestamp: Date.now(),
+  };
+}
+
+function buildUserMessage(content: string): SdkMessage {
+  return { role: "user", content, timestamp: Date.now() };
+}
+
+function buildToolResultMessage(
+  toolCallId: string,
+  toolName: string,
+  response: unknown
+): SdkMessage {
+  let text: string;
+  if (response === null || response === undefined) {
+    text = "";
+  } else if (typeof response === "string") {
+    text = response;
+  } else {
+    text = JSON.stringify(response);
+  }
+  return {
+    role: "toolResult",
+    toolCallId,
+    toolName,
+    content: [{ type: "text", text }],
+    isError: false,
+    timestamp: Date.now(),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// RealPiClient
+// ---------------------------------------------------------------------------
 export class RealPiClient implements PiClient {
-  private readonly client: GoogleGenAI;
+  private readonly authStorage: AuthStorage;
+  private readonly modelRegistry: ModelRegistry;
 
   constructor() {
-    this.client = new GoogleGenAI({
-      apiKey: env.PI_API_KEY,
-      httpOptions: {
-        baseUrl: env.PI_BASE_URL,
-      },
-    });
+    // InMemory auth storage keeps credentials in process memory.
+    // PI_PROVIDER selects the Pi SDK provider (e.g. "google", "anthropic").
+    this.authStorage = AuthStorage.inMemory();
+    this.authStorage.setRuntimeApiKey(env.PI_PROVIDER, env.PI_API_KEY);
+
+    this.modelRegistry = ModelRegistry.inMemory(this.authStorage);
   }
 
   async chat(
@@ -23,181 +135,198 @@ export class RealPiClient implements PiClient {
     requestId: string,
     sessionId: string
   ): Promise<PiChatResponse> {
-    logger.info(
-      { requestId, sessionId },
-      "pi.client.chat.started"
-    );
+    logger.info({ requestId, sessionId }, "pi.client.chat.started");
 
-    const contents: Array<{
-      role: string;
-      parts: Array<{
-        text?: string;
-        functionCall?: {
-          name: string;
-          args: Record<string, unknown>;
+    // Buffer of tool calls executed during this prompt turn by our custom tools.
+    const executedToolCalls: PiToolCall[] = [];
+
+    // ------------------------------------------------------------------
+    // 1. Define custom tools that proxy execution through SandboxService.
+    //    Each tool's execute() is called by the Pi SDK when the model
+    //    requests that tool.  We record the PiToolCall then forward to
+    //    SandboxService so tool execution always flows through the sandbox layer.
+    // ------------------------------------------------------------------
+    const shellRunTool = defineTool({
+      name: "shell_run",
+      label: "Shell Run",
+      description:
+        "Execute a safe allowlisted shell command inside the sandbox pod.",
+      parameters: obj(
+        {
+          command: str(
+            "The command to run. Only pwd, ls, cat, whoami, node --version are allowed."
+          ),
+        },
+        ["command"]
+      ),
+      execute: async (toolCallId, params) => {
+        const piToolCall: PiToolCall = {
+          id: toolCallId,
+          name: "shell_run",
+          arguments: { command: (params as { command: string }).command },
         };
-        functionResponse?: {
-          name: string;
-          response: Record<string, unknown>;
+        executedToolCalls.push(piToolCall);
+
+        const result = await sandboxService.executeTool(
+          requestId,
+          sessionId,
+          toolCallId,
+          piToolCall
+        );
+        return {
+          content: [{ type: "text", text: JSON.stringify(result) }],
+          details: result,
         };
-      }>;
-    }> = [];
+      },
+    });
 
-    // Map history to Gemini content parts
-    for (const msg of history) {
-      if (msg.role === "user") {
-        contents.push({
-          role: "user",
-          parts: [{ text: msg.content }],
-        });
-      } else if (msg.role === "model") {
-        const parts: Array<{
-          text?: string;
-          functionCall?: {
-            name: string;
-            args: Record<string, unknown>;
-          };
-        }> = [];
+    const fsReadTool = defineTool({
+      name: "fs_read",
+      label: "Filesystem Read",
+      description:
+        "Read a file inside the /workspace directory in the sandbox pod.",
+      parameters: obj(
+        {
+          path: str(
+            "The file path relative to /workspace (e.g. 'src/app.ts' or '/workspace/package.json')."
+          ),
+        },
+        ["path"]
+      ),
+      execute: async (toolCallId, params) => {
+        const piToolCall: PiToolCall = {
+          id: toolCallId,
+          name: "fs_read",
+          arguments: { path: (params as { path: string }).path },
+        };
+        executedToolCalls.push(piToolCall);
 
-        if (msg.content) {
-          parts.push({ text: msg.content });
-        }
+        const result = await sandboxService.executeTool(
+          requestId,
+          sessionId,
+          toolCallId,
+          piToolCall
+        );
+        return {
+          content: [{ type: "text", text: JSON.stringify(result) }],
+          details: result,
+        };
+      },
+    });
 
-        if (msg.toolCalls) {
-          for (const tc of msg.toolCalls) {
-            parts.push({
-              functionCall: {
-                name: tc.name,
-                args: tc.arguments,
-              },
-            });
-          }
-        }
+    const envInspectTool = defineTool({
+      name: "env_inspect",
+      label: "Environment Inspect",
+      description:
+        "Inspect the environment of the sandbox pod, including directories, user and runtime information.",
+      parameters: obj({}),
+      execute: async (toolCallId) => {
+        const piToolCall: PiToolCall = {
+          id: toolCallId,
+          name: "env_inspect",
+          arguments: {},
+        };
+        executedToolCalls.push(piToolCall);
 
-        contents.push({
-          role: "model",
-          parts,
-        });
-      } else if (msg.role === "tool" && msg.toolResponse) {
-        let responseObj: Record<string, unknown>;
-        const rawResponse = msg.toolResponse.response;
-        if (rawResponse !== null && typeof rawResponse === "object") {
-          responseObj = rawResponse as Record<string, unknown>;
-        } else {
-          responseObj = { result: rawResponse };
-        }
+        const result = await sandboxService.executeTool(
+          requestId,
+          sessionId,
+          toolCallId,
+          piToolCall
+        );
+        return {
+          content: [{ type: "text", text: JSON.stringify(result) }],
+          details: result,
+        };
+      },
+    });
 
-        contents.push({
-          role: "tool",
-          parts: [
-            {
-              functionResponse: {
-                name: msg.toolResponse.name,
-                response: responseObj,
-              },
-            },
-          ],
-        });
-      }
-    }
-
-    // Append new message if present
-    if (message) {
-      contents.push({
-        role: "user",
-        parts: [{ text: message }],
-      });
-    }
+    // ------------------------------------------------------------------
+    // 2. Create a fresh in-memory Pi SDK session per chat() invocation.
+    //    AgentService owns history; we rebuild the Pi session from PiMessage[].
+    //    This means the Pi SDK's internal turn loop starts with full context.
+    // ------------------------------------------------------------------
+    const { session } = await createAgentSession({
+      authStorage: this.authStorage,
+      modelRegistry: this.modelRegistry,
+      sessionManager: SessionManager.inMemory(),
+      // Disable all built-in tools (read, bash, edit, write).
+      // Only our 3 custom sandbox-proxy tools are exposed to the model.
+      noTools: "builtin",
+      customTools: [shellRunTool, fsReadTool, envInspectTool],
+    });
 
     try {
-      const response = await this.client.models.generateContent({
-        model: "gemini-2.5-flash",
-        contents,
-        config: {
-          tools: [
-            {
-              functionDeclarations: [
-                {
-                  name: "shell_run",
-                  description:
-                    "Execute a safe allowlisted shell command inside the sandbox pod.",
-                  parameters: {
-                    type: Type.OBJECT,
-                    properties: {
-                      command: {
-                        type: Type.STRING,
-                        description:
-                          "The command to run. Only pwd, ls, cat, whoami, node --version are allowed.",
-                      },
-                    },
-                    required: ["command"],
-                  },
-                },
-                {
-                  name: "fs_read",
-                  description:
-                    "Read a file inside the /workspace directory in the sandbox pod.",
-                  parameters: {
-                    type: Type.OBJECT,
-                    properties: {
-                      path: {
-                        type: Type.STRING,
-                        description:
-                          "The file path relative to /workspace (e.g. 'src/app.ts' or '/workspace/package.json').",
-                      },
-                    },
-                    required: ["path"],
-                  },
-                },
-                {
-                  name: "env_inspect",
-                  description:
-                    "Inspect the environment of the sandbox pod, including directories, user and runtime information.",
-                  parameters: {
-                    type: Type.OBJECT,
-                    properties: {},
-                  },
-                },
-              ],
-            },
-          ],
-        },
-      });
+      // ------------------------------------------------------------------
+      // 3. Reconstruct conversation history into the Pi SDK session state.
+      //    Pi SDK messages (AgentMessage = UserMessage | AssistantMessage |
+      //    ToolResultMessage) are set directly on session.state.messages.
+      // ------------------------------------------------------------------
+      if (history.length > 0) {
+        const sdkMessages: SdkMessage[] = [];
 
-      const functionCalls = response.functionCalls;
-      const toolCalls: PiToolCall[] = [];
-
-      if (functionCalls && functionCalls.length > 0) {
-        for (const fc of functionCalls) {
-          if (fc.name) {
-            toolCalls.push({
-              id: generateId(),
-              name: fc.name,
-              arguments: (fc.args as Record<string, unknown>) ?? {},
-            });
+        for (const msg of history) {
+          if (msg.role === "user") {
+            sdkMessages.push(buildUserMessage(msg.content));
+          } else if (msg.role === "model") {
+            sdkMessages.push(
+              buildAssistantMessage(msg.content, msg.toolCalls)
+            );
+          } else if (msg.role === "tool" && msg.toolResponse) {
+            sdkMessages.push(
+              buildToolResultMessage(
+                msg.toolResponse.id,
+                msg.toolResponse.name,
+                msg.toolResponse.response
+              )
+            );
           }
         }
+
+        session.state.messages = sdkMessages;
       }
+
+      // ------------------------------------------------------------------
+      // 4. Run the prompt.
+      //
+      //    The Pi SDK drives its own internal reasoning loop:
+      //    - Sends context to the model
+      //    - Receives tool calls from the model
+      //    - Calls our custom tool execute() callbacks (above)
+      //    - Feeds results back to the model
+      //    - Repeats until the model produces a final text response
+      //
+      //    All tool execution flows through SandboxService (step 1 above).
+      //    executedToolCalls accumulates every tool call made during the turn.
+      // ------------------------------------------------------------------
+      await session.prompt(message);
+
+      // ------------------------------------------------------------------
+      // 5. Extract final assistant text and return PiChatResponse.
+      // ------------------------------------------------------------------
+      const finalText = session.getLastAssistantText() ?? "";
 
       logger.info(
         {
           requestId,
           sessionId,
-          hasToolCalls: toolCalls.length > 0,
+          hasToolCalls: executedToolCalls.length > 0,
+          toolCallCount: executedToolCalls.length,
         },
         "pi.client.chat.completed"
       );
 
       return {
-        message: response.text ?? "",
-        toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+        message: finalText,
+        // Preserve AgentService contract: toolCalls is undefined when empty.
+        toolCalls: executedToolCalls.length > 0 ? executedToolCalls : undefined,
       };
     } catch (error) {
-      logger.error(
-        { requestId, sessionId, error },
-        "pi.client.chat.failed"
-      );
+      logger.error({ requestId, sessionId, error }, "pi.client.chat.failed");
       throw error;
+    } finally {
+      // Always dispose the session to release subscriptions and memory.
+      session.dispose();
     }
   }
 }
