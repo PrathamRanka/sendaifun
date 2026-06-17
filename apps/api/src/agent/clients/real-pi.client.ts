@@ -10,32 +10,19 @@ import { PiClient } from "../interfaces/pi-client.interface";
 import { PiMessage, PiChatResponse, PiToolCall } from "../types/agent.types";
 import { logger } from "../../observability/logger/logger";
 import { sandboxService } from "../../sandbox/services/sandbox.service";
+import { Type } from "@sinclair/typebox";
+
 
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-type AnySchema = any;
-
-function obj(
-  properties: Record<string, AnySchema>,
-  required?: string[]
-): AnySchema {
-  return { type: "object", properties, required: required ?? [] };
-}
-
-function str(description?: string): AnySchema {
-  const s: Record<string, unknown> = { type: "string" };
-  if (description) s["description"] = description;
-  return s;
-}
-
 type SdkMessage = any;
 
 function buildAssistantMessage(
   content: string,
   toolCalls?: PiToolCall[]
 ): SdkMessage {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const contentBlocks: any[] = [];
+
+  const contentBlocks: unknown[] = [];
 
   if (content) {
     contentBlocks.push({ type: "text", text: content });
@@ -55,7 +42,7 @@ function buildAssistantMessage(
   return {
     role: "assistant",
     content: contentBlocks,
-   api: "google-generative-ai",
+    api: "google-generative-ai",
     provider: "google",
     model: "unknown",
     usage: {
@@ -103,7 +90,7 @@ export class RealPiClient implements PiClient {
   private readonly modelRegistry: ModelRegistry;
 
   constructor() {
-       this.authStorage = AuthStorage.inMemory();
+    this.authStorage = AuthStorage.inMemory();
     this.authStorage.setRuntimeApiKey(env.PI_PROVIDER, env.PI_API_KEY);
 
     this.modelRegistry = ModelRegistry.inMemory(this.authStorage);
@@ -117,20 +104,18 @@ export class RealPiClient implements PiClient {
   ): Promise<PiChatResponse> {
     logger.info({ requestId, sessionId }, "pi.client.chat.started");
 
-       const executedToolCalls: PiToolCall[] = [];
+    const executedToolCalls: PiToolCall[] = [];
     const shellRunTool = defineTool({
       name: "shell_run",
       label: "Shell Run",
       description:
         "Execute a safe allowlisted shell command inside the sandbox pod.",
-      parameters: obj(
-        {
-          command: str(
-            "The command to run. Only pwd, ls, cat, whoami, node --version are allowed."
-          ),
-        },
-        ["command"]
-      ),
+      parameters: Type.Object({
+        command: Type.String({
+          description:
+            "The command to run. Only pwd, ls, cat, whoami, node --version are allowed.",
+        }),
+      }),
       execute: async (toolCallId, params) => {
         const piToolCall: PiToolCall = {
           id: toolCallId,
@@ -157,14 +142,12 @@ export class RealPiClient implements PiClient {
       label: "Filesystem Read",
       description:
         "Read a file inside the /workspace directory in the sandbox pod.",
-      parameters: obj(
-        {
-          path: str(
-            "The file path relative to /workspace (e.g. 'src/app.ts' or '/workspace/package.json')."
-          ),
-        },
-        ["path"]
-      ),
+      parameters: Type.Object({
+        path: Type.String({
+          description:
+            "The file path relative to /workspace (e.g. 'src/app.ts' or '/workspace/package.json').",
+        }),
+      }),
       execute: async (toolCallId, params) => {
         const piToolCall: PiToolCall = {
           id: toolCallId,
@@ -191,7 +174,7 @@ export class RealPiClient implements PiClient {
       label: "Environment Inspect",
       description:
         "Inspect the environment of the sandbox pod, including directories, user and runtime information.",
-      parameters: obj({}),
+      parameters: Type.Object({}),
       execute: async (toolCallId) => {
         const piToolCall: PiToolCall = {
           id: toolCallId,
@@ -213,11 +196,11 @@ export class RealPiClient implements PiClient {
       },
     });
 
-     const { session } = await createAgentSession({
+    const { session } = await createAgentSession({
       authStorage: this.authStorage,
       modelRegistry: this.modelRegistry,
       sessionManager: SessionManager.inMemory(),
-       noTools: "builtin",
+      noTools: "builtin",
       customTools: [shellRunTool, fsReadTool, envInspectTool],
     });
 
@@ -249,7 +232,7 @@ export class RealPiClient implements PiClient {
 
       await session.prompt(message);
 
-    const finalText = session.getLastAssistantText() ?? "";
+      const finalText = session.getLastAssistantText() ?? "";
 
       logger.info(
         {
