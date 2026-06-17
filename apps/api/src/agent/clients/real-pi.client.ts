@@ -5,85 +5,39 @@ import {
   ModelRegistry,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
+import { Type } from "@sinclair/typebox";
 import { env } from "../../config/env";
 import { PiClient } from "../interfaces/pi-client.interface";
-import { PiMessage, PiChatResponse, PiToolCall } from "../types/agent.types";
+import { PiChatResponse, PiMessage, PiToolCall } from "../types/agent.types";
 import { logger } from "../../observability/logger/logger";
 import { sandboxService } from "../../sandbox/services/sandbox.service";
-import { Type } from "@sinclair/typebox";
 
+function buildTranscript(history: PiMessage[], currentMessage: string): string {
+  const lines: string[] = [];
 
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type SdkMessage = any;
-
-function buildAssistantMessage(
-  content: string,
-  toolCalls?: PiToolCall[]
-): SdkMessage {
-
-  const contentBlocks: unknown[] = [];
-
-  if (content) {
-    contentBlocks.push({ type: "text", text: content });
-  }
-
-  if (toolCalls) {
-    for (const tc of toolCalls) {
-      contentBlocks.push({
-        type: "toolCall",
-        id: tc.id,
-        name: tc.name,
-        arguments: tc.arguments,
-      });
+  for (const msg of history) {
+    if (msg.role === "user") {
+      lines.push(`User: ${msg.content}`);
+    } else if (msg.role === "model") {
+      lines.push(`Assistant: ${msg.content}`);
+    } else if (msg.role === "tool" && msg.toolResponse) {
+      const responseText =
+        msg.toolResponse.response === null ||
+        msg.toolResponse.response === undefined
+          ? ""
+          : typeof msg.toolResponse.response === "string"
+            ? msg.toolResponse.response
+            : JSON.stringify(msg.toolResponse.response);
+      lines.push(
+        `Tool ${msg.toolResponse.name} Result:\n${responseText}`
+      );
     }
   }
 
-  return {
-    role: "assistant",
-    content: contentBlocks,
-    api: "google-generative-ai",
-    provider: "google",
-    model: "unknown",
-    usage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      totalTokens: 0,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-    },
-    stopReason: "stop",
-    timestamp: Date.now(),
-  };
+  lines.push(`User: ${currentMessage}`);
+  return lines.join("\n\n");
 }
 
-function buildUserMessage(content: string): SdkMessage {
-  return { role: "user", content, timestamp: Date.now() };
-}
-
-function buildToolResultMessage(
-  toolCallId: string,
-  toolName: string,
-  response: unknown
-): SdkMessage {
-  let text: string;
-  if (response === null || response === undefined) {
-    text = "";
-  } else if (typeof response === "string") {
-    text = response;
-  } else {
-    text = JSON.stringify(response);
-  }
-  return {
-    role: "toolResult",
-    toolCallId,
-    toolName,
-    content: [{ type: "text", text }],
-    isError: false,
-    timestamp: Date.now(),
-  };
-}
 
 export class RealPiClient implements PiClient {
   private readonly authStorage: AuthStorage;
@@ -92,7 +46,6 @@ export class RealPiClient implements PiClient {
   constructor() {
     this.authStorage = AuthStorage.inMemory();
     this.authStorage.setRuntimeApiKey(env.PI_PROVIDER, env.PI_API_KEY);
-
     this.modelRegistry = ModelRegistry.inMemory(this.authStorage);
   }
 
@@ -105,6 +58,7 @@ export class RealPiClient implements PiClient {
     logger.info({ requestId, sessionId }, "pi.client.chat.started");
 
     const executedToolCalls: PiToolCall[] = [];
+
     const shellRunTool = defineTool({
       name: "shell_run",
       label: "Shell Run",
@@ -120,7 +74,7 @@ export class RealPiClient implements PiClient {
         const piToolCall: PiToolCall = {
           id: toolCallId,
           name: "shell_run",
-          arguments: { command: (params as { command: string }).command },
+          arguments: { command: params.command },
         };
         executedToolCalls.push(piToolCall);
 
@@ -152,7 +106,7 @@ export class RealPiClient implements PiClient {
         const piToolCall: PiToolCall = {
           id: toolCallId,
           name: "fs_read",
-          arguments: { path: (params as { path: string }).path },
+          arguments: { path: params.path },
         };
         executedToolCalls.push(piToolCall);
 
@@ -196,6 +150,7 @@ export class RealPiClient implements PiClient {
       },
     });
 
+
     const { session } = await createAgentSession({
       authStorage: this.authStorage,
       modelRegistry: this.modelRegistry,
@@ -205,32 +160,10 @@ export class RealPiClient implements PiClient {
     });
 
     try {
-      if (history.length > 0) {
-        const sdkMessages: SdkMessage[] = [];
-
-        for (const msg of history) {
-          if (msg.role === "user") {
-            sdkMessages.push(buildUserMessage(msg.content));
-          } else if (msg.role === "model") {
-            sdkMessages.push(
-              buildAssistantMessage(msg.content, msg.toolCalls)
-            );
-          } else if (msg.role === "tool" && msg.toolResponse) {
-            sdkMessages.push(
-              buildToolResultMessage(
-                msg.toolResponse.id,
-                msg.toolResponse.name,
-                msg.toolResponse.response
-              )
-            );
-          }
-        }
-
-        session.state.messages = sdkMessages;
-      }
+      const prompt = buildTranscript(history, message);
 
 
-      await session.prompt(message);
+      await session.prompt(prompt);
 
       const finalText = session.getLastAssistantText() ?? "";
 
@@ -246,14 +179,12 @@ export class RealPiClient implements PiClient {
 
       return {
         message: finalText,
-        // Preserve AgentService contract: toolCalls is undefined when empty.
         toolCalls: executedToolCalls.length > 0 ? executedToolCalls : undefined,
       };
     } catch (error) {
       logger.error({ requestId, sessionId, error }, "pi.client.chat.failed");
       throw error;
     } finally {
-      // Always dispose the session to release subscriptions and memory.
       session.dispose();
     }
   }
