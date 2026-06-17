@@ -1,344 +1,302 @@
 # LeaseForge
 
-A Kubernetes-Leased Sandbox Runtime for Pi Agents.
-
-## Overview
-
-LeaseForge is a TypeScript backend service that executes Pi Agent tool calls inside a fixed pool of Kubernetes sandbox pods.
-
-The system maintains exactly 8 warm sandbox pods and uses Kubernetes Lease objects as the source of truth for pod ownership.
-
-Sandbox pods are never permanently assigned to users or sessions.
-
-Instead:
-
-1. A tool call arrives.
-2. The system acquires an available Lease.
-3. The corresponding sandbox pod is leased.
-4. The tool executes.
-5. The Lease is released immediately.
-
-If all sandbox pods are busy, requests enter a bounded FIFO queue and wait for capacity.
-
-The design prioritizes:
-
-* Correct concurrency control
-* Crash recovery
-* Kubernetes-native coordination
-* Clear observability
-* Safe sandbox execution
+A production-grade Kubernetes-Leased Sandbox Runtime for Pi Agents.
 
 ---
 
-# High Level Architecture
+## 1. Project Overview
 
-┌───────────────────────┐
-│      Client           │
-└──────────┬────────────┘
-│
-▼
-┌───────────────────────┐
-│      POST /chat       │
-└──────────┬────────────┘
-│
-▼
-┌───────────────────────┐
-│     Agent Service     │
-│     (Pi SDK)          │
-└──────────┬────────────┘
-│
-▼
-┌───────────────────────┐
-│    Tool Router        │
-└──────────┬────────────┘
-│
-▼
-┌───────────────────────┐
-│   Sandbox Service     │
-└──────────┬────────────┘
-│
-▼
-┌───────────────────────┐
-│    Lease Manager      │
-└──────────┬────────────┘
-│
-▼
-┌───────────────────────┐
-│ Kubernetes Leases     │
-└──────────┬────────────┘
-│
-▼
-┌───────────────────────┐
-│ Sandbox Pods (8)      │
-└───────────────────────┘
+LeaseForge is a highly concurrent, layered TypeScript backend service designed to execute Pi Agent tool calls inside a fixed pool of Kubernetes sandbox pods. Rather than permanently assigning pods to users or chat sessions, LeaseForge treats pods as ephemeral, leaseable resources. 
+
+The system coordinates a warm pool of **8 sandbox pods** and uses Kubernetes `Lease` objects as the distributed state mechanism for pod ownership. When a tool call is invoked, the runtime dynamically leases an available pod, runs the tool call securely inside the container namespace, terminates any orphaned processes, and immediately releases the lease back to the pool.
 
 ---
 
-# Sandbox Pool
+## 2. High-Level Architecture Diagram
 
-The system owns a fixed StatefulSet.
+The system adheres to a strict layered dependency structure flowing downwards:
 
-sandbox-runner-0
-sandbox-runner-1
-sandbox-runner-2
-sandbox-runner-3
-sandbox-runner-4
-sandbox-runner-5
-sandbox-runner-6
-sandbox-runner-7
-
-Each pod has a matching Lease object.
-
-## Lease Name                  Pod
-
-sandbox-runner-0      ->    sandbox-runner-0
-sandbox-runner-1      ->    sandbox-runner-1
-sandbox-runner-2      ->    sandbox-runner-2
-sandbox-runner-3      ->    sandbox-runner-3
-sandbox-runner-4      ->    sandbox-runner-4
-sandbox-runner-5      ->    sandbox-runner-5
-sandbox-runner-6      ->    sandbox-runner-6
-sandbox-runner-7      ->    sandbox-runner-7
-
----
-
-# Lease Lifecycle
-
-Tool Request
-│
-▼
-Acquire Lease
-│
-▼
-Execute Tool
-│
-▼
-Release Lease
-
-A Lease contains:
-
-* service instance id
-* request id
-* session id
-* tool call id
-* expiration timestamp
-
-Example holder identity:
-
-api-1:req-123:session-abc:tool-xyz
-
----
-
-# Lease Acquisition Algorithm
-
-1. Read all Lease objects.
-2. Identify free or expired Leases.
-3. Attempt Lease acquisition using optimistic concurrency.
-4. Update holderIdentity.
-5. Update renewTime.
-6. Set leaseDurationSeconds.
-
-If a conflict occurs:
-
-1. Kubernetes returns 409 Conflict.
-2. Retry another Lease.
-3. Repeat until success or exhaustion.
-
-This guarantees that two tool calls can never lease the same pod simultaneously.
+```text
+       ┌────────────────────────────────────────────────────────┐
+       │                       Client / UI                      │
+       └───────────────────────────┬────────────────────────────┘
+                                   │
+                                   ▼ POST /api/chat
+       ┌────────────────────────────────────────────────────────┐
+       │                   Controller Layer                     │
+       │  (chat.controller.ts, pod.controller.ts, etc.)         │
+       └───────────────────────────┬────────────────────────────┘
+                                   │
+                                   ▼
+       ┌────────────────────────────────────────────────────────┐
+       │                    Agent Service                       │
+       │  (Session history serialization, Pi Client SDK calls)   │
+       └───────────────────────────┬────────────────────────────┘
+                                   │
+                                   ▼
+       ┌────────────────────────────────────────────────────────┐
+       │                    Tool Router                         │
+       │  (Routes model tool calls to specific tool runtimes)   │
+       └───────────────────────────┬────────────────────────────┘
+                                   │
+                                   ▼
+       ┌────────────────────────────────────────────────────────┐
+       │                   Sandbox Service                      │
+       │  (Orchestrates lease lifecycle & timeout cleanups)    │
+       └───────────────────────────┬────────────────────────────┘
+                                   │
+                                   ▼
+       ┌────────────────────────────────────────────────────────┐
+       │                    Lease Manager                       │
+       │  (Coordinates lease acquisition & queue progression)   │
+       └─────────────────┬───────────────────┬──────────────────┘
+                         │                   │
+                         ▼                   ▼
+       ┌────────────────────┐     ┌─────────────────────┐
+       │ Lease Acquirer     │     │ FIFO Queue Manager  │
+       │ (Optimistic lock)  │     │ (In-memory backoff) │
+       └─────────┬──────────┘     └─────────────────────┘
+                 │
+                 ▼
+       ┌────────────────────────────────────────────────────────┐
+       │               Kubernetes Repositories                  │
+       │  (Direct read/writes to pods and coordination.k8s.io)   │
+       └────────────────────────────────────────────────────────┐
+```
 
 ---
 
-# Lease Expiration
+## 3. Local Setup
 
-Leases automatically recover from API crashes.
+### Prerequisites
+* **Node.js**: `v20.x` or higher
+* **npm**: `v10.x` or higher
+* **Kubernetes Client**: Valid `kubeconfig` configured on your host machines.
 
-A Lease is considered expired when:
-
-currentTime >
-renewTime + leaseDurationSeconds
-
-Expired Leases are immediately reusable.
-
-No manual cleanup is required.
-
----
-
-# Queueing Model
-
-When all 8 pods are leased:
-
-Tool Call
-│
-▼
-FIFO Queue
-│
-▼
-Wait For Capacity
-
-Properties:
-
-* FIFO ordering
-* Max wait time = 15 seconds
-* Process-local queue
-* Automatic wake-up on Lease release
-
-If capacity does not become available:
-
-sandbox_capacity_timeout
-
-is returned.
+### Installation
+1. Clone the repository and navigate to the project directory:
+   ```bash
+   cd e:/sendaifun
+   ```
+2. Install the local project dependencies:
+   ```bash
+   npm install
+   ```
+3. Copy the template configuration environment file and update with your actual API key:
+   ```bash
+   cp .env.example .env
+   ```
 
 ---
 
-# Tool Execution Model
+## 4. Kind Cluster Setup
 
-Tool Request
-│
-▼
-Lease Pod
-│
-▼
-Execute In Pod
-│
-▼
-Collect Output
-│
-▼
-Release Lease
+If you are running and testing in a local developer sandbox environment, configure Kubernetes using **Kind** (Kubernetes in Docker):
 
-Tool execution timeout:
-
-30 seconds
-
-Lease duration:
-
-45 seconds
+1. **Create Kind Cluster**:
+   ```bash
+   kind create cluster --name leaseforge
+   ```
+2. **Ensure your context is configured**:
+   ```bash
+   kubectl cluster-info --context kind-leaseforge
+   ```
+3. **Verify docker images can be loaded**:
+   To test deployment, build your API docker image locally and load it into the kind registry:
+   ```bash
+   docker build -t leaseforge-api:latest .
+   kind load docker-image leaseforge-api:latest --name leaseforge
+   ```
 
 ---
 
-# Supported Tools
+## 5. Kubernetes Deployment
 
-shell.run
+To deploy LeaseForge into your cluster, apply the manifests in order from the `infra/kubernetes/` directory:
 
-Allowed commands:
-
-* pwd
-* ls
-* cat
-* whoami
-* node --version
-
-Arbitrary shell execution is prohibited.
-
----
-
-fs.read
-
-Reads files inside an allowlisted root.
-
-Protected against:
-
-* path traversal
-* absolute path escape
-* unauthorized reads
-
----
-
-env.inspect
-
-Returns:
-
-* pod name
-* namespace
-* user
-* cwd
-* runtime versions
+1. **Apply the Namespace**:
+   ```bash
+   kubectl apply -f infra/kubernetes/namespace.yaml
+   ```
+2. **Apply Security Account, Roles and Bindings**:
+   ```bash
+   kubectl apply -f infra/kubernetes/service-account.yaml
+   kubectl apply -f infra/kubernetes/role.yaml
+   kubectl apply -f infra/kubernetes/role-binding.yaml
+   ```
+3. **Apply Warm Pod pool and associated Leases**:
+   ```bash
+   kubectl apply -f infra/kubernetes/statefulset.yaml
+   kubectl apply -f infra/kubernetes/leases.yaml
+   ```
+4. **Deploy the API Service and Secrets**:
+   Create a Kubernetes secret containing your API Key:
+   ```bash
+   kubectl create secret generic leaseforge-secrets \
+     --namespace=leaseforge \
+     --from-literal=PI_API_KEY="your-gemini-api-key"
+   ```
+   Apply the API deployment and service:
+   ```bash
+   kubectl apply -f infra/kubernetes/deployment.yaml
+   kubectl apply -f infra/kubernetes/service.yaml
+   ```
 
 ---
 
-# Concurrency Guarantees
+## 6. Environment Variables
 
-The system guarantees:
+The application is configured using variables in `.env` or container environment contexts:
 
-✓ No pod double-assignment
+| Variable | Description | Default | Required |
+| :--- | :--- | :--- | :--- |
+| `NODE_ENV` | Application environment (`development`, `production`, `test`) | `development` | Yes |
+| `PORT` | Local network port the server listens on | `3000` | Yes |
+| `PI_API_KEY` | Your Pi SDK/Gemini API key | (None) | Yes |
+| `PI_BASE_URL` | Base API target URL for the Pi SDK runtime | `https://generativelanguage.googleapis.com` | Yes |
+| `KUBE_NAMESPACE` | Target namespace sandbox pods and leases reside in | `leaseforge` | Yes |
+| `INSTANCE_ID` | Identity string of the API server instance | `api-1` | Yes |
 
-✓ Lease conflict safety
-
-✓ Automatic crash recovery
-
-✓ FIFO queue ordering
-
-✓ Timeout cleanup
-
-✓ Lease release on failures
-
----
-
-# Failure Handling
-
-Tool Failure
-
-Tool throws error
-│
-▼
-Release Lease
-│
-▼
-Return Failure
+*Note: The application will fail startup with a clear configuration validation schema exception if `PI_API_KEY` is empty or missing.*
 
 ---
 
-Tool Timeout
+## 7. Running the API
 
-Tool exceeds 30 seconds
-│
-▼
-Cancel Execution
-│
-▼
-Release Lease
-│
-▼
-Return Timeout
-
----
-
-API Crash
-
-Process crashes
-│
-▼
-Lease expires
-│
-▼
-Future request recovers pod
+* **Development (Next.js Turbopack)**:
+  ```bash
+  npm run dev
+  ```
+* **Production Build**:
+  ```bash
+  npm run build
+  ```
+* **Production Start**:
+  ```bash
+  npm run start
+  ```
 
 ---
 
-# Production Evolution
+## 8. Running Tests
 
-The current implementation uses a process-local queue.
+LeaseForge uses **Vitest** for testing and **ESLint** for code checks.
 
-For multi-replica deployments:
+* **Linting & Code Quality**:
+  ```bash
+  npm run lint
+  ```
+* **TypeScript Check**:
+  ```bash
+  npm run typecheck
+  ```
+* **Unit & Concurrency Tests**:
+  ```bash
+  npm test
+  ```
+* **Live Integration Tests**:
+  ```bash
+  cross-env RUN_INTEGRATION_TESTS=true npm run test:integration
+  ```
 
-Replace FIFO Queue with:
+---
 
-* Redis Streams
-* Kafka
-* NATS JetStream
-* Temporal
+## 9. Conceptual Models
 
-Lease renewals should become heartbeat-based.
+### Lease Model
+We map each of the 8 sandbox pods to a matching `Lease` object in Kubernetes (namespaced as `sandbox-runner-0` through `sandbox-runner-7`).
+A lease is "acquired" when its `spec.holderIdentity` is set to a specific client requester sequence: `${instanceId}:${requestId}:${sessionId}:${toolCallId}`.
 
-Execution history should be persisted to PostgreSQL.
+To guarantee that two concurrent threads never lease the same pod simultaneously, we use **Optimistic Concurrency Control (OCC)**. Every lease update includes the object's `metadata.resourceVersion`. If two requests compete for the same pod lease, the first update succeeds, and the second receives a `409 Conflict` from Kubernetes. The second request catches this conflict, discards the state, and immediately attempts to lock the next available pod.
 
-Prometheus metrics should track:
+### Queue Model
+If all 8 sandbox pods are actively leased, requests are politely enqueued in an in-memory double-linked FIFO queue.
+* **Wait Time limit**: Max queue wait duration is 15 seconds. If no lease becomes free in that window, the request is rejected with `SandboxCapacityError` (status code `503`).
+* **Progressive Wakeups**: Upon a lease release, or if a dequeued/woken request fails to acquire the lease, the system automatically triggers the next queued entry. This guarantees the queue never deadlocks.
 
-* lease acquisition latency
-* lease conflicts
-* queue length
-* queue wait time
-* tool failures
-* tool timeouts
+### Crash Recovery Model
+If an API replica crashes while holding a lease, the lease will naturally expire. A lease is expired when:
+`currentTime > spec.renewTime + spec.leaseDurationSeconds`
+The system is entirely self-healing: any subsequent lease acquisition scan automatically identifies expired leases as "free" and reclaims/resets them on the fly.
 
-Sandbox images should be hardened and network isolated.
+### Tool Execution Flow
+1. **Chat Request**: Client posts to `/api/chat`.
+2. **Mutex Lock**: `SessionLockManager` locks the request per `sessionId` to prevent concurrent mutations of the session history array.
+3. **Reasoning Loop**: The Pi SDK evaluates history and determines if tool execution is required.
+4. **Lease Allocation**: If `shell_run` or other tools are called, the system obtains a sandbox pod lease (retrying or queueing as needed).
+5. **Execution**: The command is executed inside the pod container.
+6. **Timeout Guard**: Execution is bounded by a 30s timeout. If it times out, the service executes `kill -9 -1` inside the container namespace to kill any orphaned/leaked processes before releasing the lease.
+7. **Release**: The lease is conditionally released back to the pool, and the next queued request is woken.
+
+---
+
+## 10. Example API Curl Commands
+
+### 1. Execute Chat Message (POST /api/chat)
+```bash
+curl -X POST http://localhost:3000/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"sessionId": "test-session-1", "message": "List files in the current folder using tool calls."}'
+```
+**Response Output Example**:
+```json
+{
+  "sessionId": "test-session-1",
+  "message": "I found the following files in the directory...",
+  "toolCalls": [
+    {
+      "id": "tc-12345",
+      "name": "shell_run",
+      "arguments": {
+        "command": "ls -l"
+      }
+    }
+  ]
+}
+```
+
+### 2. Check Sandbox Pod Statuses (GET /api/pods)
+```bash
+curl http://localhost:3000/api/pods
+```
+**Response Output Example**:
+```json
+[
+  {
+    "podName": "sandbox-runner-0",
+    "ready": true,
+    "leaseStatus": "leased",
+    "holderIdentity": "api-1:req-a:sess-a:tool-a",
+    "expiration": "2026-06-17T18:20:45.000Z"
+  },
+  {
+    "podName": "sandbox-runner-1",
+    "ready": true,
+    "leaseStatus": "free",
+    "holderIdentity": null,
+    "expiration": null
+  }
+]
+```
+
+### 3. Service Health (GET /api/health)
+```bash
+curl http://localhost:3000/api/health
+```
+**Response Output Example**:
+```json
+{
+  "ok": true,
+  "kubernetes": "connected",
+  "sandboxPodsReady": 8
+}
+```
+
+---
+
+## 11. Concurrency Scenario: 9 Parallel Requests
+If 9 requests are dispatched concurrently to the runtime:
+1. Pods `sandbox-runner-0` through `sandbox-runner-7` are successfully locked by the first 8 requests.
+2. The 9th request fails immediate acquisition, log logs `sandbox.queue.started`, and is pushed into the FIFO queue.
+3. As soon as any of the first 8 requests completes its tool execution and runs `releaseLease`, its `wakeNext()` callback wakes the 9th request.
+4. The 9th request grabs the newly freed pod lease and continues execution.
