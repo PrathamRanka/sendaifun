@@ -7,22 +7,19 @@ export class PodRepository {
     namespace: string,
     podName: string
   ): Promise<V1Pod> {
-    const pod =
-      await kubeClient.coreApi.readNamespacedPod(
-        name: podName,
-        namespace
-      );
-
-    return pod;
+    return await kubeClient.coreApi.readNamespacedPod({
+      name: podName,
+      namespace,
+    });
   }
 
   async listPods(
     namespace: string
   ): Promise<V1Pod[]> {
     const response =
-      await kubeClient.coreApi.listNamespacedPod(
-        namespace
-      );
+      await kubeClient.coreApi.listNamespacedPod({
+        namespace,
+      });
 
     return response.items ?? [];
   }
@@ -40,6 +37,49 @@ export class PodRepository {
           condition.status === "True"
       )
     );
+  }
+
+  async executeCommand(
+    namespace: string,
+    podName: string,
+    containerName: string,
+    command: string[]
+  ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+    const { PassThrough } = await import("stream");
+    const stdoutStream = new PassThrough();
+    const stderrStream = new PassThrough();
+
+    let stdout = "";
+    let stderr = "";
+
+    stdoutStream.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+
+    stderrStream.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    return new Promise((resolve) => {
+      kubeClient.exec.exec(
+        namespace,
+        podName,
+        containerName,
+        command,
+        stdoutStream,
+        stderrStream,
+        null, // stdin
+        false, // tty
+        (status) => {
+          const exitCode = status?.status === "Success" ? 0 : (status?.code ? Number(status.code) : 1);
+          resolve({
+            stdout,
+            stderr,
+            exitCode,
+          });
+        }
+      );
+    });
   }
 }
 

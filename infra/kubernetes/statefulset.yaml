@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: sandbox-runner
+  namespace: leaseforge
+spec:
+  serviceName: sandbox-runner-service
+  replicas: 8
+  selector:
+    matchLabels:
+      app: sandbox-runner
+  template:
+    metadata:
+      labels:
+        app: sandbox-runner
+    spec:
+      containers:
+      - name: sandbox
+        image: node:20-alpine
+        command: ["sleep", "infinity"]
+        volumeMounts:
+        - name: workspace-volume
+          mountPath: /workspace
+        resources:
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+          runAsUser: 1000
+          readOnlyRootFilesystem: false
+      volumes:
+      - name: workspace-volume
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sandbox-runner-service
+  namespace: leaseforge
+spec:
+  clusterIP: None
+  selector:
+    app: sandbox-runner

@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: leaseforge-api
+  namespace: leaseforge
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: leaseforge-api
+  template:
+    metadata:
+      labels:
+        app: leaseforge-api
+    spec:
+      serviceAccountName: leaseforge-sa
+      containers:
+      - name: api
+        image: leaseforge-api:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 3000
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: PORT
+          value: "3000"
+        - name: KUBE_NAMESPACE
+          value: "leaseforge"
+        - name: INSTANCE_ID
+          value: "api-1"
+        - name: PI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: leaseforge-secrets
+              key: PI_API_KEY
+        - name: PI_BASE_URL
+          value: "https://generativelanguage.googleapis.com"
+        resources:
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+          runAsUser: 1000

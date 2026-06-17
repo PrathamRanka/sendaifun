@@ -7,24 +7,21 @@ export class LeaseRepository {
     namespace: string,
     leaseName: string
   ): Promise<V1Lease> {
-    const response =
-      await kubeClient.coordinationApi.readNamespacedLease(
-        leaseName,
-        namespace
-      );
-
-    return response.body;
+    return await kubeClient.coordinationApi.readNamespacedLease({
+      name: leaseName,
+      namespace,
+    });
   }
 
   async listLeases(
     namespace: string
   ): Promise<V1Lease[]> {
     const response =
-      await kubeClient.coordinationApi.listNamespacedLease(
-        namespace
-      );
+      await kubeClient.coordinationApi.listNamespacedLease({
+        namespace,
+      });
 
-    return response.body.items;
+    return response.items;
   }
 
   async updateLease(
@@ -32,14 +29,11 @@ export class LeaseRepository {
     leaseName: string,
     lease: V1Lease
   ): Promise<V1Lease> {
-    const response =
-      await kubeClient.coordinationApi.replaceNamespacedLease(
-        leaseName,
-        namespace,
-        lease
-      );
-
-    return response.body;
+    return await kubeClient.coordinationApi.replaceNamespacedLease({
+      name: leaseName,
+      namespace,
+      body: lease,
+    });
   }
 
   async patchLease(
@@ -47,24 +41,11 @@ export class LeaseRepository {
     leaseName: string,
     patch: unknown
   ): Promise<V1Lease> {
-    const response =
-      await kubeClient.coordinationApi.patchNamespacedLease(
-        leaseName,
-        namespace,
-        patch,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        {
-          headers: {
-            "Content-Type":
-              "application/merge-patch+json",
-          },
-        }
-      );
-
-    return response.body;
+    return await kubeClient.coordinationApi.patchNamespacedLease({
+      name: leaseName,
+      namespace,
+      body: patch,
+    });
   }
 }
 
