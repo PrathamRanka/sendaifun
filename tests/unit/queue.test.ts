@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { QueueManager } from "../../apps/api/src/sandbox/queue-manager";
-import { FifoQueue } from "../../apps/api/src/sandbox/fifo-queue";
+import { QueueManager } from "../../apps/api/src/sandbox/queue/queue-manager";
+import { FifoQueue } from "../../apps/api/src/sandbox/queue/fifo-queue";
 import { SandboxCapacityError } from "../../apps/api/src/shared/errors/sandbox-capacity.error";
 
 describe("RequestQueue Unit Tests", () => {

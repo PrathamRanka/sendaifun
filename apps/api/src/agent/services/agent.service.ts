@@ -1,6 +1,6 @@
 import { PiClient } from "../interfaces/pi-client.interface";
 import { realPiClient } from "../clients/real-pi.client";
-import { sandboxService, SandboxService } from "../../sandbox/sandbox.service";
+import { sandboxService, SandboxService } from "../../sandbox/services/sandbox.service";
 import { PiMessage, PiToolCall } from "../types/agent.types";
 import { logger } from "../../observability/logger/logger";
 

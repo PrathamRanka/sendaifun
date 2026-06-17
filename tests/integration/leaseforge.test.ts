@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { leaseRepository } from "../../apps/api/src/kubernetes/repositories/lease.repository";
 import { env } from "../../apps/api/src/config/env";
-import { sandboxService } from "../../apps/api/src/sandbox/sandbox.service";
+import { sandboxService } from "../../apps/api/src/sandbox/services/sandbox.service";
 
 describe("LeaseForge Cluster Integration Tests", () => {
   const runIntegration = process.env.RUN_INTEGRATION_TESTS === "true";

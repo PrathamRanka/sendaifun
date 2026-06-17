@@ -1,4 +1,4 @@
-import { PodExecutor, podExecutor } from "../../kubernetes/repositories/pod-executor";
+import { PodExecutor, podExecutor } from "../../sandbox/executor/pod-executor";
 import { ShellValidator, shellValidator } from "../validators/shell-validator";
 import { env } from "../../config/env";
 import { posix } from "path";

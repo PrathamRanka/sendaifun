@@ -1,5 +1,5 @@
 import { V1Pod } from "@kubernetes/client-node";
-import { PodRepository, podRepository } from "../kubernetes/repositories/pod.repository";
+import { PodRepository, podRepository } from "../../kubernetes/repositories/pod.repository";
 
 export class PodManager {
   constructor(private readonly podRepo: PodRepository = podRepository) {}

@@ -1,4 +1,4 @@
-import { sandboxService, SandboxService } from "../../sandbox/sandbox.service";
+import { sandboxService, SandboxService } from "../../sandbox/services/sandbox.service";
 
 export class PodController {
   constructor(

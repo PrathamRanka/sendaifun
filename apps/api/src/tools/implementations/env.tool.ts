@@ -1,4 +1,4 @@
-import { PodExecutor, podExecutor } from "../../kubernetes/repositories/pod-executor";
+import { PodExecutor, podExecutor } from "../../sandbox/executor/pod-executor";
 import { env } from "../../config/env";
 import { POD_CONTAINER_NAME } from "../../shared/constants/sandbox.constants";
 

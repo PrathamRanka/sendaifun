@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach, Mock } from "vitest";
-import { LeaseManager } from "../../apps/api/src/sandbox/lease-manager";
-import { LeaseAcquirer } from "../../apps/api/src/sandbox/lease-acquirer";
-import { LeaseReleaser } from "../../apps/api/src/sandbox/lease-releaser";
-import { LeaseExpiration } from "../../apps/api/src/sandbox/lease-expiration";
-import { QueueManager } from "../../apps/api/src/sandbox/queue-manager";
+import { LeaseManager } from "../../apps/api/src/sandbox/lease/lease-manager";
+import { LeaseAcquirer } from "../../apps/api/src/sandbox/lease/lease-acquirer";
+import { LeaseReleaser } from "../../apps/api/src/sandbox/lease/lease-releaser";
+import { LeaseExpiration } from "../../apps/api/src/sandbox/lease/lease-expiration";
+import { QueueManager } from "../../apps/api/src/sandbox/queue/queue-manager";
 import { V1Lease } from "@kubernetes/client-node";
 
 describe("Lease Acquisition & Lifecycle Unit Tests", () => {
@@ -11,6 +11,7 @@ describe("Lease Acquisition & Lifecycle Unit Tests", () => {
     listLeases: Mock;
     updateLease: Mock;
     getLease: Mock;
+    patchLease: Mock;
   };
   let leaseAcquirer: LeaseAcquirer;
   let leaseManager: LeaseManager;
@@ -20,6 +21,7 @@ describe("Lease Acquisition & Lifecycle Unit Tests", () => {
       listLeases: vi.fn(),
       updateLease: vi.fn(),
       getLease: vi.fn(),
+      patchLease: vi.fn(),
     };
     const leaseExpiration = new LeaseExpiration();
     leaseAcquirer = new LeaseAcquirer(mockLeaseRepo, leaseExpiration);
